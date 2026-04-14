@@ -1,11 +1,7 @@
 #!/bin/bash
 
 # bring down necessary utilities
-sudo yum install git postgresql php php-pgsql httpd -y
-
-# setup apache
-sudo systemctl start httpd
-sudo systemctl enable httpd
+sudo yum install git java-17-openjdk-devel maven -y
 
 # setup firewall rules
 sudo firewall-cmd --permanent --add-port=80/tcp
@@ -15,11 +11,43 @@ sudo firewall-cmd --reload
 # backup firewall rules
 sudo cp /etc/firewalld/direct.xml /etc/firewalld/direct.xml.backup
 
-#  Adjust SELinux to allow to allow HTTPD to make network connections  
-sudo setsebool -P httpd_can_network_connect_db 1
+# Stop and disable Apache if it is running (from a prior PHP-based deployment)
+if systemctl is-active --quiet httpd; then
+    sudo systemctl stop httpd
+    sudo systemctl disable httpd
+fi
 
-# Copy in the php file
-sudo cp TechExcel-Migrate-Linux-workloads/resources/deployment/onprem/webapp/orders.php /var/www/html
+# Allow Java to bind to port 80
+sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which java))
+
+# Build the Spring Boot application
+cd TechExcel-Migrate-Linux-workloads/resources/deployment/onprem/webapp
+mvn package -DskipTests
+
+# Install the app as a systemd service
+APP_JAR=$(ls target/orders-*.jar | head -1)
+APP_DIR=$(pwd)
+
+sudo tee /etc/systemd/system/orders.service > /dev/null <<EOF
+[Unit]
+Description=Terra Firm Orders Application
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/java -jar ${APP_DIR}/${APP_JAR}
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start and enable the service
+sudo systemctl daemon-reload
+sudo systemctl start orders
+sudo systemctl enable orders
 
 # Let the user know we are good
 status=$?
